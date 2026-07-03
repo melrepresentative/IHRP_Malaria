@@ -7,15 +7,19 @@ from openpyxl.utils.dataframe import dataframe_to_rows
 import numpy as np
 from datetime import datetime, date
 
-# Excel-safe helpers
 def row_to_excel_safe(row):
     """Convert a dataframe_to_rows row into Excel-safe values."""
     out = []
     for v in row:
         if pd.isna(v):  # catches pd.NA, NaN, None
             out.append(None)
+        elif isinstance(v, float) and (v == float("inf") or v == float("-inf")):
+            out.append(None)  # Excel cannot store infinities
         elif isinstance(v, np.generic):  # numpy scalar -> native Python
-            out.append(v.item())
+            item = v.item()
+            if isinstance(item, float) and item != item:  # NaN guard
+                item = None
+            out.append(item)
         else:
             out.append(v)
     return out
@@ -330,7 +334,7 @@ if excel_file is not None:
                     "malaria_recheck" in sheet_rule_choice.get(s, [])
                     for s in selected
                 )
-
+                
                 if wants_recheck and hasattr(rules_mod, "malaria_recheck"):
                     original_input_columns = set()
                     positive_df_for_recheck = None
@@ -338,27 +342,14 @@ if excel_file is not None:
 
                     # 1) First try to use already-processed outputs
                     for sname, bundle in processed.items():
-                        if bundle.get("rule_name") == "malaria_positive" and positive_df_for_recheck is None:
-                            positive_df_for_recheck = bundle["file"].copy()
-                            original_input_columns = set(bundle["file"].columns)
-
                         if bundle.get("rule_name") == "malaria_aggregate" and aggregate_df_for_recheck is None:
                             aggregate_df_for_recheck = bundle["file"].copy()
 
                     # 2) If still missing, try to build from selected ORIGINAL sheets
                     def looks_like_positive(df: pd.DataFrame) -> bool:
                         cols = {str(c).strip().upper() for c in df.columns}
-
-                        has_patient = "PATIENT_NAME" in cols
-                        has_date = "SCREENING_DATE" in cols
-                        has_result = ("RDT" in cols) or ("MICROSCOPY" in cols) or ("RDT_MICROSCOPY" in cols)
-
-                        # CMHN normally has FACILITY_NAME
-                        # MFM normally has STATE_REGION + TOWNSHIP
-                        has_cmhn_key = "FACILITY_NAME" in cols
-                        has_mfm_key = "STATE_REGION" in cols and "TOWNSHIP" in cols
-
-                        return has_patient and has_date and has_result and (has_cmhn_key or has_mfm_key)
+                        required = {"PATIENT_NAME", "SCREENING_DATE", "RDT"}
+                        return required.issubset(cols)
 
                     def looks_like_aggregate(df: pd.DataFrame) -> bool:
                         cols = {str(c).strip().upper() for c in df.columns}
@@ -369,34 +360,16 @@ if excel_file is not None:
                         for s in selected:
                             raw_df = xls.parse(sheet_name=s)
 
+                            # skip if we already have both
                             if positive_df_for_recheck is not None and aggregate_df_for_recheck is not None:
                                 break
 
                             if positive_df_for_recheck is None and looks_like_positive(raw_df):
                                 original_input_columns = set(raw_df.columns)
 
-                                # Prefer original data if it already has CMHN/MFM indicator columns.
-                                # Otherwise process it with malaria_positive so RECHECK has CM1_REACH etc.
-                                raw_cols = {str(c).strip().upper() for c in raw_df.columns}
-                                has_indicator = any(
-                                    c in raw_cols
-                                    for c in {
-                                        "CM1_REACH",
-                                        "CM1_CMHN",
-                                        "CM1_MFM",
-                                        "CM2_D_REACH",
-                                        "CM2_D_CMHN",
-                                        "CM2_D_MFM",
-                                        "CM2_N_REACH",
-                                        "CM2_N_CMHN",
-                                        "CM2_N_MFM",
-                                    }
-                                )
-
-                                if has_indicator:
-                                    positive_df_for_recheck = raw_df.copy()
-                                else:
-                                    positive_df_for_recheck = rules_mod.malaria_positive(raw_df.copy())
+                                # For RECHECK only, use original uploaded data.
+                                # Do NOT call malaria_positive(), because it recalculates CM1_REACH.
+                                positive_df_for_recheck = raw_df.copy()
 
                                 # RECHECK needs AGE_GP for pivot.
                                 if "AGE_GP" not in positive_df_for_recheck.columns and "AGE_YEAR" in positive_df_for_recheck.columns:
@@ -477,19 +450,30 @@ if excel_file is not None:
                         default_ws = wb.active
                         wb.remove(default_ws)
 
-                        # Add "Processed - <sheet>" sheets without touching original ones
+# Add "Processed - <sheet>" sheets without touching original ones
+                        import re
+
+                        def sanitize_sheet_title(name: str, existing: set) -> str:
+                            # Excel forbids : \ / ? * [ ] and max 31 chars
+                            name = re.sub(r'[:\\/?*\[\]]', '_', str(name)).strip() or "Sheet"
+                            name = name[:31]
+                            base = name
+                            suffix = 1
+                            while name in existing:
+                                suffix += 1
+                                tag = f" ({suffix})"
+                                name = base[:31 - len(tag)] + tag
+                            existing.add(name)
+                            return name
+
                         for sheet_name, bundle in processed.items():
                             if "sheet_title" in bundle:
                                 new_title = bundle["sheet_title"]
                             else:
                                 new_title = f"Processed - {sheet_name}"
 
-                            # Ensure uniqueness
-                            title = new_title
-                            suffix = 1
-                            while title in wb.sheetnames:
-                                suffix += 1
-                                title = f"{new_title} ({suffix})"
+                            # Ensure uniqueness + Excel-legal (<=31 chars, no illegal chars)
+                            title = sanitize_sheet_title(new_title, set(wb.sheetnames))
 
                             ws = wb.create_sheet(title=title)  # append at end
                             if "custom_rows" in bundle:
