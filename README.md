@@ -64,16 +64,9 @@ malaria_processed_with_summary.xlsx
 ├── Processed - Positive
 ├── Processed - Aggregate
 └── Processed - REACH_RECHECK
-Screenshots
 
-Place screenshots in a folder:
 
-screenshots/
 
-Example:
-
-![Main App](screenshots/main_app.png)
-![Preview](screenshots/preview_output.png)
 Notes
 
 Only selected sheets are processed
