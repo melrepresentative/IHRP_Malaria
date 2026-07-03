@@ -96,8 +96,5 @@ Return a DataFrame
 
 Use a COMMENT column for validation messages
 
-License
 
-Internal project for malaria validation.
-- check your README after you commit  
-- or help you add **real screenshots into GitHub** 📸
+
